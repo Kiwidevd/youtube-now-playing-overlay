@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Now Playing</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+
+<style>
+  @font-face {
+    font-family: 'FieldOfHopes';
+    src: url('resources/fonts/the-field-of-hopes-and-dreams.otf') format('opentype');
+    font-display: swap;
+  }
+
+  :root{
+    --note-color:   #ff7a1a;
+    --title-color:  #ffb347;
+    --artist-color: #ff9d1f;
+    --btn-color:    #ffcf8a;
+    --btn-color-active: #ffffff;
+    --shadow:       #3a1400;
+    --pixel-font:   'FieldOfHopes', 'Press Start 2P', monospace;
+  }
+
+  html,body{
+    margin:0; padding:0;
+    background:#8000ff; /* fondo violeta para chroma key */
+    overflow:hidden;
+    width:100%; height:100%;
+    position:relative;
+  }
+
+  * { box-sizing:border-box; image-rendering:pixelated; }
+
+  /* título/artista: esquina superior izquierda, cropear aquí si quieres solo esto */
+  #titleBlock{
+    position:absolute;
+    top:24px;
+    left:24px;
+    display:flex;
+    align-items:flex-start;
+    gap:14px;
+    max-width:900px;
+    font-family: var(--pixel-font);
+    -webkit-font-smoothing:none;
+    opacity:0;
+    transform: translateX(-14px);
+    transition: opacity .5s ease, transform .5s ease;
+  }
+  #titleBlock.visible{
+    opacity:1;
+    transform: translateX(0);
+  }
+
+  #note{
+    flex:none;
+    width:28px; height:28px;
+    margin-top:2px;
+    filter: drop-shadow(2px 2px 0 var(--shadow));
+    animation: bob 1.6s ease-in-out infinite;
+  }
+  #note.playing{ animation-play-state: running; }
+  #note.paused{ animation-play-state: paused; }
+
+  @keyframes bob{
+    0%,100%{ transform: translateY(0) rotate(0deg); }
+    50%{ transform: translateY(-4px) rotate(-4deg); }
+  }
+
+  #meta{
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    min-width:0;
+  }
+
+  #title{
+    font-size:15px;
+    line-height:1.6;
+    color:var(--title-color);
+    text-shadow: 2px 2px 0 var(--shadow);
+    white-space:normal;
+    overflow-wrap:break-word;
+    word-break:break-word;
+  }
+
+  #artist{
+    margin-top:8px;
+    font-size:11px;
+    line-height:1.5;
+    color:var(--artist-color);
+    text-shadow: 2px 2px 0 var(--shadow);
+    white-space:normal;
+    overflow-wrap:break-word;
+    word-break:break-word;
+  }
+
+  /* controles: esquina inferior derecha, separados a propósito del título */
+  #controls{
+    position:absolute;
+    bottom:24px;
+    right:24px;
+    display:flex;
+    gap:10px;
+  }
+
+  button.ctrl{
+    font-family: var(--pixel-font);
+    background:transparent;
+    border:2px solid var(--btn-color);
+    color:var(--btn-color);
+    width:34px; height:34px;
+    font-size:13px;
+    cursor:pointer;
+    text-shadow: 1px 1px 0 var(--shadow);
+    box-shadow: 2px 2px 0 var(--shadow);
+    transition: transform .08s ease, color .15s ease, border-color .15s ease;
+  }
+  button.ctrl:hover{
+    color:var(--btn-color-active);
+    border-color:var(--btn-color-active);
+  }
+  button.ctrl:active{
+    transform: translate(2px,2px);
+    box-shadow: 0 0 0 var(--shadow);
+  }
+
+  #ytplayer-wrap{
+    position:absolute;
+    width:1px; height:1px;
+    overflow:hidden;
+    opacity:0;
+    pointer-events:none;
+  }
+</style>
+</head>
+<body>
+
+  <div id="titleBlock">
+    <svg id="note" class="paused" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+      <path fill="#7fd7ff" d="M6 2h2v7.5a2.5 2.5 0 1 1-1-2V4H6V2zm5 0h2v1.5a2.5 2.5 0 1 1-1 2V4h-1V2z"/>
+      <path fill="var(--note-color)" d="M6 1h1v8.2a2.3 2.3 0 1 1-1-1.9V3H4V1h2zm5.5 0H13v1.8a2.3 2.3 0 1 1-1-1.9V3H10V1h1.5z"/>
+    </svg>
+
+    <div id="meta">
+      <div id="title">Cargando...</div>
+      <div id="artist">&nbsp;</div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <button class="ctrl" id="btnPlay" title="Play / Pause">▶</button>
+    <button class="ctrl" id="btnNext" title="Siguiente">»</button>
+  </div>
+
+  <div id="ytplayer-wrap"><div id="ytplayer"></div></div>
+
+<script>
+const API_KEY     = "TU_API_KEY_AQUI";
+const PLAYLIST_ID = "TU_PLAYLIST_ID_AQUI";
+const AUTO_HIDE_MS = 30000;
+
+const titleBlockEl = document.getElementById('titleBlock');
+const titleEl = document.getElementById('title');
+const artistEl = document.getElementById('artist');
+const noteEl = document.getElementById('note');
+const btnPlay = document.getElementById('btnPlay');
+const btnNext = document.getElementById('btnNext');
+
+let player;
+let playlistMeta = {};      // videoId -> {title, channelTitle}
+let shuffledVideoIds = [];  // orden aleatorio armado por nosotros
+let currentVideoId = null;
+let isPlaying = false;
+let hideTimer = null;
+let metaReady = false;
+let playerReady = false;
+
+/* Fisher-Yates shuffle */
+function shuffleArray(arr){
+  for(let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+async function loadPlaylistMeta(){
+  let pageToken = "";
+  const orderedIds = [];
+  try{
+    do{
+      const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${PLAYLIST_ID}&pageToken=${pageToken}&key=${API_KEY}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if(data.error){
+        console.error("Error de YouTube API:", data.error);
+        titleEl.textContent = "Error: revisa tu API Key / Playlist ID";
+        return;
+      }
+      (data.items || []).forEach(item => {
+        const vid = item.snippet.resourceId.videoId;
+        playlistMeta[vid] = {
+          title: item.snippet.title,
+          channelTitle: item.snippet.videoOwnerChannelTitle || item.snippet.channelTitle
+        };
+        orderedIds.push(vid);
+      });
+      pageToken = data.nextPageToken || "";
+    } while(pageToken);
+
+    shuffledVideoIds = shuffleArray(orderedIds);
+    metaReady = true;
+    if(playerReady) startPlayback();
+  }catch(err){
+    console.error(err);
+    titleEl.textContent = "Error cargando la playlist";
+  }
+}
+
+const tag = document.createElement('script');
+tag.src = "https://www.youtube.com/iframe_api";
+document.body.appendChild(tag);
+
+function onYouTubeIframeAPIReady(){
+  player = new YT.Player('ytplayer', {
+    height: '1',
+    width: '1',
+    playerVars: {
+      autoplay: 0,
+      controls: 0,
+      disablekb: 1
+    },
+    events: {
+      onReady: onPlayerReady,
+      onStateChange: onPlayerStateChange
+    }
+  });
+}
+
+function onPlayerReady(){
+  playerReady = true;
+  if(metaReady) startPlayback();
+}
+
+function startPlayback(){
+  player.cuePlaylist({ playlist: shuffledVideoIds, index: 0 });
+}
+
+function onPlayerStateChange(e){
+  if(e.data === YT.PlayerState.PLAYING){
+    isPlaying = true;
+    btnPlay.textContent = "❚❚";
+    noteEl.classList.remove('paused');
+    noteEl.classList.add('playing');
+    updateNowPlaying();
+  } else if(e.data === YT.PlayerState.PAUSED){
+    isPlaying = false;
+    btnPlay.textContent = "▶";
+    noteEl.classList.remove('playing');
+    noteEl.classList.add('paused');
+  } else if(e.data === YT.PlayerState.ENDED){
+    // cuePlaylist ya avanza solo con nextVideo internamente
+  }
+}
+
+function updateNowPlaying(){
+  const data = player.getVideoData();
+  const vid = data.video_id;
+  if(vid === currentVideoId) return;
+  currentVideoId = vid;
+
+  const meta = playlistMeta[vid];
+  const title = meta ? meta.title : (data.title || "—");
+  const artist = meta ? meta.channelTitle : (data.author || "");
+
+  titleEl.textContent = title;
+  artistEl.textContent = artist;
+
+  showTitleBlock();
+}
+
+function showTitleBlock(){
+  if(hideTimer) clearTimeout(hideTimer);
+  titleBlockEl.classList.add('visible');
+  hideTimer = setTimeout(() => {
+    titleBlockEl.classList.remove('visible');
+  }, AUTO_HIDE_MS);
+}
+
+btnPlay.addEventListener('click', () => {
+  if(!player) return;
+  if(isPlaying){
+    player.pauseVideo();
+  } else {
+    player.playVideo();
+  }
+});
+
+btnNext.addEventListener('click', () => {
+  if(!player) return;
+  player.nextVideo();
+});
+
+loadPlaylistMeta();
+</script>
+</body>
+</html>
